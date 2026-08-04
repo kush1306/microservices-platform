@@ -1,0 +1,112 @@
+services:
+  authentication-service:
+    build:
+      context: ./authentication-service
+      dockerfile: Dockerfile
+
+    container_name: authentication
+
+    ports:
+      - "8000:8000"
+
+    env_file:
+      - ./authentication-service/.env
+
+    networks:
+      - app-network
+
+    restart: unless-stopped
+
+  user-service:
+    build:
+      context: ./user-service
+      dockerfile: Dockerfile
+
+    container_name: user
+
+    ports:
+      - "8001:8000"
+
+    env_file:
+      - ./user-service/.env
+
+    networks:
+      - app-network
+
+    restart: unless-stopped
+
+  product-service:
+    build:
+      context: ./product-service
+      dockerfile: Dockerfile
+
+    container_name: product
+
+    ports:
+      - "8002:8000"
+
+    env_file:
+      - ./product-service/.env
+
+    networks:
+      - app-network
+
+    restart: unless-stopped
+
+  inventory-service:
+    build:
+      context: ./inventory-service
+      dockerfile: Dockerfile
+
+    container_name: inventory
+
+    ports:
+      - "8003:8000"
+
+    env_file:
+      - ./inventory-service/.env
+
+    networks:
+      - app-network
+
+    restart: unless-stopped
+
+  order-service:
+    build:
+      context: ./order-service
+      dockerfile: Dockerfile
+
+    container_name: order
+
+    ports:
+      - "8004:8000"
+
+    env_file:
+      - ./order-service/.env
+
+    networks:
+      - app-network
+
+    restart: unless-stopped
+
+  notification-service:
+    build:
+      context: ./notification-service
+      dockerfile: Dockerfile
+
+    container_name: notification
+
+    ports:
+      - "8005:8000"
+
+    env_file:
+      - ./notification-service/.env
+
+    networks:
+      - app-network
+
+    restart: unless-stopped
+
+networks:
+  app-network:
+    driver: bridge
