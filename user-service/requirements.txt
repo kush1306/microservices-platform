@@ -1,0 +1,7 @@
+# Python 3.13 compatible dependency set
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+sqlalchemy==2.0.40
+pydantic[email]==2.10.6
+python-dotenv==1.0.1
+email-validator==2.2.0
