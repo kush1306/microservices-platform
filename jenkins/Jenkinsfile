@@ -18,7 +18,7 @@ pipeline {
     }
     stage('Verify Endpoints'){
         steps{
-            sh 'curl http://localhost:8000/health'
+            sh 'curl http://localhost:8000/api/v1/health'
             sh 'curl http://localhost:8001/health'
             sh 'curl http://localhost:8002/health'
             sh 'curl http://localhost:8003/health'
