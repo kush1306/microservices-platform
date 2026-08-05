@@ -1,11 +1,46 @@
 pipeline {
      agent any 
+
+    environment {
+        AWS_ACCESS_KEY_ID     = credentials('AWS_ACCESS_KEY')
+        AWS_SECRET_ACCESS_KEY = credentials('AWS_ACCESS_KEY_PRIVATE')
+        AWS_DEFAULT_REGION    = 'us-east-1'
+    }
+ 
    stages {
     stage('Checkout'){
         steps{
             git branch: 'develop', url: 'https://github.com/kush1306/microservices-platform.git'
         }
     }
+     stage('Terraform Init') {
+            steps {
+                dir('terraform') {
+                    sh 'terraform init'
+                }
+            }
+        }
+     stage('Terraform Validate') {
+            steps {
+                dir('terraform') {
+                    sh 'terraform validate'
+                }
+            }
+        }
+     stage('Terraform Plan') {
+            steps {
+                dir('terraform') {
+                    sh 'terraform plan'
+                }
+            }
+        }
+     stage('Terraform Apply') {
+            steps {
+                dir('terraform') {
+                    sh 'terraform apply -auto-approve'
+                }
+            }
+        }
     stage('Build Docker Image'){
         steps{
             sh 'docker compose build'
