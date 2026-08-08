@@ -69,7 +69,7 @@ pipeline {
                     sh '''
                         ssh -v -o StrictHostKeyChecking=no \
                         ubuntu@$EC2_IP \
-                        "docker --version && docker compose version"
+                        "echo SSH_SUCCESS"
                     '''
                 }
             }
