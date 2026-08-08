@@ -80,6 +80,7 @@ resource "aws_instance" "microservices_platform_instance" {
     
     user_data = <<-EOF
       #!/bin/bash
+cloud-init status --wait
 apt-get update
 apt-get install -y docker.io
 systemctl enable docker
