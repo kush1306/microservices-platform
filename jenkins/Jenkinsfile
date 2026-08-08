@@ -41,6 +41,13 @@ pipeline {
                 }
             }
         }
+     stage ('Terraform Output') {
+          steps {
+               dir ('terraform') {
+                    sh 'terraform output'
+               }
+          }
+      }   
     stage('Build Docker Image'){
         steps{
             sh 'docker compose build'
