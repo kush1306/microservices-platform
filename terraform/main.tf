@@ -77,6 +77,14 @@ resource "aws_instance" "microservices_platform_instance" {
     subnet_id = aws_subnet.microservices_platform_subnet.id
     vpc_security_group_ids = [aws_security_group.microservices_platform_sg.id]
     key_name = "mp_key"
+    
+    user_data = <<-EOF
+       #!/bin/bash
+       apt-get update
+       apt-get install -y docker.io docker-compose-plugin
+      systemctl enable docker
+      systemctl start docker
+EOF
 
     tags = {
         Name = "mp_instance"
