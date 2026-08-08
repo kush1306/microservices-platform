@@ -37,7 +37,7 @@ pipeline {
      stage('Terraform Apply') {
             steps {
                 dir('terraform') {
-                    sh 'terraform apply -replace="aws_instance.microservices_platform_instance" auto-approve' 
+                    sh 'terraform apply -replace="aws_instance.microservices_platform_instance" -auto-approve' 
                 }
             }
         }
