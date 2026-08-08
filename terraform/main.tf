@@ -84,6 +84,10 @@ resource "aws_instance" "microservices_platform_instance" {
        apt-get install -y docker.io docker-compose-plugin
       systemctl enable docker
       systemctl start docker
+      mkdir -p /usr/local/lib/docker/cli-plugins
+      curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
+      -o /usr/local/lib/docker/cli-plugins/docker-compose
+      chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 EOF
 
     tags = {
