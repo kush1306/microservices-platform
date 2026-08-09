@@ -73,7 +73,7 @@ resource "aws_security_group" "microservices_platform_sg" {
 
 resource "aws_instance" "microservices_platform_instance" {
     ami = "ami-0b6d9d3d33ba97d99"
-    instance_type = "t2.micro"
+    instance_type = "t3.medium"
     subnet_id = aws_subnet.microservices_platform_subnet.id
     vpc_security_group_ids = [aws_security_group.microservices_platform_sg.id]
     key_name = "mp_key"
