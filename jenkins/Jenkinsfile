@@ -123,7 +123,7 @@ pipeline {
             }
         }
 
-       stage('Copy Project to EC2') {
+        stage('Copy Project to EC2') {
     steps {
         withCredentials([
             file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
@@ -158,7 +158,7 @@ pipeline {
             '''
         }
     }
-}}
+}
         stage('Build Docker Images') {
             steps {
                 withCredentials([
