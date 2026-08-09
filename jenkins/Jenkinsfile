@@ -117,7 +117,7 @@ pipeline {
                             -o StrictHostKeyChecking=no \
                             -o ConnectTimeout=10 \
                             "$SSH_USER@$EC2_IP" \
-                            "docker --version && docker compose version"
+                            "docker --version && docker compose version && docker ps"
                     '''
                 }
             }
