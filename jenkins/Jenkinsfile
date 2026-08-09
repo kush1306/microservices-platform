@@ -62,44 +62,94 @@ pipeline {
                 echo "EC2 Public IP: ${env.EC2_IP}"
             }
         }
-        
-        stage('SSH into EC2') {
-    steps {
-        withCredentials([
-            sshUserPrivateKey(
-                credentialsId: 'ec2-ss-key',
-                keyFileVariable: 'SSH_KEY',
-                usernameVariable: 'SSH_USER'
-            )
-        ]) {
-            sh '''
-                ssh -v \
-                    -i "$SSH_KEY" \
-                    -o StrictHostKeyChecking=no \
-                    "$SSH_USER@$EC2_IP" \
-                    "echo SSH_SUCCESS"
-            '''
+
+        stage('Debug Jenkins Network') {
+            steps {
+                sh '''
+                    echo "===== Jenkins Host ====="
+                    hostname
+
+                    echo "===== Jenkins User ====="
+                    whoami
+
+                    echo "===== Jenkins Public IPv4 ====="
+                    curl -4 ifconfig.me
+
+                    echo "===== EC2 IP ====="
+                    echo "$EC2_IP"
+
+                    echo "===== Testing EC2 Port 22 ====="
+                    nc -vz -w5 "$EC2_IP" 22
+                '''
+            }
         }
-    }
-}
+
+        stage('SSH into EC2') {
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'ec2-ssh-key',
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    )
+                ]) {
+                    sh '''
+                        ssh -v \
+                            -i "$SSH_KEY" \
+                            -o IdentitiesOnly=yes \
+                            -o StrictHostKeyChecking=no \
+                            -o ConnectTimeout=10 \
+                            "$SSH_USER@$EC2_IP" \
+                            "echo SSH_SUCCESS"
+                    '''
+                }
+            }
+        }
+
+        stage('Check Docker') {
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'ec2-ssh-key',
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    )
+                ]) {
+                    sh '''
+                        ssh \
+                            -i "$SSH_KEY" \
+                            -o IdentitiesOnly=yes \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_IP" \
+                            "docker --version && docker compose version"
+                    '''
+                }
+            }
+        }
 
         stage('Copy Project to EC2') {
             steps {
-                sshagent(['ec2-ssh-key']) {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'ec2-ssh-key',
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    )
+                ]) {
                     sh '''
-                        ssh -o StrictHostKeyChecking=no \
-                        ubuntu@$EC2_IP \
-                        "mkdir -p ~/microservices-platform"
+                        ssh \
+                            -i "$SSH_KEY" \
+                            -o IdentitiesOnly=yes \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_IP" \
+                            "mkdir -p ~/microservices-platform"
 
-                        scp -o StrictHostKeyChecking=no -r \
-                        authentication-service \
-                        inventory-service \
-                        notification-service \
-                        order-service \
-                        product-service \
-                        user-service \
-                        docker-compose.yml \
-                        ubuntu@$EC2_IP:~/microservices-platform/
+                        scp \
+                            -i "$SSH_KEY" \
+                            -o IdentitiesOnly=yes \
+                            -o StrictHostKeyChecking=no \
+                            -r docker-compose.yml services \
+                            "$SSH_USER@$EC2_IP:~/microservices-platform/"
                     '''
                 }
             }
@@ -107,11 +157,20 @@ pipeline {
 
         stage('Build Docker Images') {
             steps {
-                sshagent(['ec2-ssh-key']) {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'ec2-ssh-key',
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    )
+                ]) {
                     sh '''
-                        ssh -o StrictHostKeyChecking=no \
-                        ubuntu@$EC2_IP \
-                        "cd ~/microservices-platform && docker compose build"
+                        ssh \
+                            -i "$SSH_KEY" \
+                            -o IdentitiesOnly=yes \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_IP" \
+                            "cd ~/microservices-platform && docker compose build"
                     '''
                 }
             }
@@ -119,11 +178,20 @@ pipeline {
 
         stage('Run Containers') {
             steps {
-                sshagent(['ec2-ssh-key']) {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'ec2-ssh-key',
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    )
+                ]) {
                     sh '''
-                        ssh -o StrictHostKeyChecking=no \
-                        ubuntu@$EC2_IP \
-                        "cd ~/microservices-platform && docker compose up -d"
+                        ssh \
+                            -i "$SSH_KEY" \
+                            -o IdentitiesOnly=yes \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_IP" \
+                            "cd ~/microservices-platform && docker compose up -d"
                     '''
                 }
             }
@@ -137,16 +205,54 @@ pipeline {
 
         stage('Verify Endpoints') {
             steps {
-                sshagent(['ec2-ssh-key']) {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'ec2-ssh-key',
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    )
+                ]) {
                     sh '''
-                        ssh -o StrictHostKeyChecking=no ubuntu@$EC2_IP "
+                        ssh \
+                            -i "$SSH_KEY" \
+                            -o IdentitiesOnly=yes \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_IP" \
+                            "
                             curl -f http://localhost:8000/api/v1/health &&
                             curl -f http://localhost:8001/health &&
                             curl -f http://localhost:8002/health &&
                             curl -f http://localhost:8003/health &&
                             curl -f http://localhost:8004/health &&
                             curl -f http://localhost:8005/health
-                        "
+                            "
+                    '''
+                }
+            }
+        }
+
+        stage('Manual Check') {
+            steps {
+                sleep 120
+            }
+        }
+
+        stage('Cleanup') {
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'ec2-ssh-key',
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    )
+                ]) {
+                    sh '''
+                        ssh \
+                            -i "$SSH_KEY" \
+                            -o IdentitiesOnly=yes \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_IP" \
+                            "cd ~/microservices-platform && docker compose down"
                     '''
                 }
             }
