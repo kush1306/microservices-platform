@@ -87,7 +87,7 @@ pipeline {
         stage('SSH into EC2') {
     steps {
         withCredentials([
-            file(credentialsId: 'SSH_KEY', variable: 'SSH_KEY')
+            file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
         ]) {
             sh '''
                 chmod 600 "$SSH_KEY"
