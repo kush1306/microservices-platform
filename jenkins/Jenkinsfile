@@ -63,27 +63,26 @@ pipeline {
             }
         }
 
-        stage('Debug Jenkins Network') {
-            steps {
-                sh '''
-                    echo "===== Jenkins Host ====="
-                    hostname
+       stage('Debug Jenkins Network') {
+    steps {
+        sh '''
+            echo "===== Jenkins Host ====="
+            hostname
 
-                    echo "===== Jenkins User ====="
-                    whoami
+            echo "===== Jenkins User ====="
+            whoami
 
-                    echo "===== Jenkins Public IPv4 ====="
-                    curl -4 ifconfig.me
+            echo "===== Jenkins Public IPv4 ====="
+            curl -4 ifconfig.me
 
-                    echo "===== EC2 IP ====="
-                    echo "$EC2_IP"
+            echo "===== EC2 IP ====="
+            echo "$EC2_IP"
 
-                    echo "===== Testing EC2 Port 22 ====="
-                    nc -vz -w5 "$EC2_IP" 22
-                '''
-            }
-        }
-
+            echo "===== Testing EC2 Port 22 ====="
+            powershell.exe -Command "Test-NetConnection -ComputerName $env:EC2_IP -Port 22"
+        '''
+    }
+}
         stage('SSH into EC2') {
             steps {
                 withCredentials([
