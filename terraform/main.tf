@@ -96,6 +96,19 @@ curl -SL https://github.com/docker/compose/releases/latest/download/docker-compo
 chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 EOF
 
+resource "aws_eip" "microservices_platform_eip" {
+    domain   = "vpc"
+    instance = aws_instance.microservices_platform_instance.id
+
+    tags = {
+        Name = "microservices_platform_eip"
+    }
+}
+
+output "ec2_elastic_ip" {
+    value = aws_eip.microservices_platform_eip.public_ip
+}
+
     tags = {
         Name = "mp_instance"
     }
