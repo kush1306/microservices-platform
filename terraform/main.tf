@@ -64,7 +64,7 @@ resource "aws_security_group" "microservices_platform_sg" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["184.195.61.80/32"]
+    cidr_blocks = ["49.43.131.27/32"]
   }
 
   egress {
