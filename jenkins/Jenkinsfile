@@ -217,43 +217,35 @@ REMOTE
             }
         }
 
-        stage('Push Images to ECR') {
-            steps {
-                withCredentials([
-                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
-                ]) {
-                    sh '''
+        
+stage('Push Images to ECR') {
+    steps {
+        withCredentials([
+            file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
+        ]) {
+            sh '''
+                set -e
+
+                ssh -i "$SSH_KEY" \
+                    -o StrictHostKeyChecking=no \
+                    "$SSH_USER@$EC2_PUBLIC_IP" \
+                    "BUILD_NUMBER='$BUILD_NUMBER' ECR_REGISTRY='$ECR_REGISTRY' bash -c '
                         set -e
 
-                        ssh -i "$SSH_KEY" \
-                            -o StrictHostKeyChecking=no \
-                            "$SSH_USER@$EC2_PUBLIC_IP" \
-                            "BUILD_NUMBER='$BUILD_NUMBER' ECR_REGISTRY='$ECR_REGISTRY' bash -s" <<'REMOTE'
-
-                        set -e
-
-                        for SERVICE in \
-                            authentication-service \
-                            user-service \
-                            product-service \
-                            inventory-service \
-                            order-service \
-                            notification-service
+                        for SERVICE in authentication-service user-service product-service inventory-service order-service notification-service
                         do
-                            echo "Pushing $SERVICE"
+                            echo Pushing \\$SERVICE
 
-                            docker tag \
-                                "$SERVICE:$BUILD_NUMBER" \
-                                "$ECR_REGISTRY/$SERVICE:$BUILD_NUMBER"
+                            docker tag \\$SERVICE:\\$BUILD_NUMBER \\$ECR_REGISTRY/\\$SERVICE:\\$BUILD_NUMBER
 
-                            docker push "$ECR_REGISTRY/$SERVICE:$BUILD_NUMBER"
+                            docker push \\$ECR_REGISTRY/\\$SERVICE:\\$BUILD_NUMBER
                         done
-
-                        REMOTE
-                    '''
-                }
-            }
+                    '"
+            '''
         }
+    }
+}
+
 
         stage('Apply Kubernetes Storage') {
             steps {
