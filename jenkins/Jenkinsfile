@@ -1,91 +1,32 @@
+
+cd /tmp/microservices-platform-check
+
+cat > jenkins/Jenkinsfile <<'EOF'
 pipeline {
     agent any
 
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
     environment {
-        AWS_ACCESS_KEY_ID     = credentials('AWS_ACCESS_KEY')
-        AWS_SECRET_ACCESS_KEY = credentials('AWS_ACCESS_KEY_PRIVATE')
-        AWS_DEFAULT_REGION    = 'us-east-1'
-        SSH_USER              = 'ubuntu'
+        AWS_DEFAULT_REGION = 'us-east-1'
+        ECR_REGISTRY       = '163885031975.dkr.ecr.us-east-1.amazonaws.com'
+        EKS_CLUSTER        = 'microservices-eks'
+        EC2_IP             = '3.87.163.195'
+        SSH_USER           = 'ubuntu'
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                git branch: 'develop',
-                    url: 'https://github.com/kush1306/microservices-platform.git'
+                checkout scm
             }
         }
 
-        stage('Terraform Init') {
-            steps {
-                dir('terraform') {
-                    sh 'terraform init'
-                }
-            }
-        }
-
-        stage('Terraform Validate') {
-            steps {
-                dir('terraform') {
-                    sh 'terraform validate'
-                }
-            }
-        }
-
-        stage('Terraform Plan') {
-            steps {
-                dir('terraform') {
-                    sh 'terraform plan'
-                }
-            }
-        }
-
-        stage('Terraform Apply') {
-            steps {
-                dir('terraform') {
-                    sh 'terraform apply -auto-approve'
-                }
-            }
-        }
-
-        stage('Get EC2 Public IP') {
-            steps {
-                dir('terraform') {
-                    script {
-                        env.EC2_IP = sh(
-                            script: 'terraform output -raw public_ip',
-                            returnStdout: true
-                        ).trim()
-                    }
-                }
-
-                echo "EC2 Public IP: ${env.EC2_IP}"
-            }
-        }
-
-        stage('Debug Jenkins Network') {
-            steps {
-                sh '''
-                    echo "===== Jenkins Host ====="
-                    hostname
-
-                    echo "===== Jenkins User ====="
-                    whoami
-
-                    echo "===== Jenkins Public IPv4 ====="
-                    curl -4 ifconfig.me
-
-                    echo "===== EC2 IP ====="
-                    echo "$EC2_IP"
-
-                    echo "===== Testing EC2 Port 22 ====="
-                    powershell.exe -Command "Test-NetConnection -ComputerName $env:EC2_IP -Port 22"
-                '''
-            }
-        }
-
-        stage('SSH into EC2') {
+        stage('Check Build EC2') {
             steps {
                 withCredentials([
                     file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
@@ -93,157 +34,273 @@ pipeline {
                     sh '''
                         chmod 600 "$SSH_KEY"
 
-                        ssh \
-                            -i "$SSH_KEY" \
+                        ssh -i "$SSH_KEY" \
                             -o IdentitiesOnly=yes \
                             -o StrictHostKeyChecking=no \
-                            -o ConnectTimeout=10 \
                             "$SSH_USER@$EC2_IP" \
-                            "echo SSH_SUCCESS"
+                            "docker --version && aws --version && kubectl version --client"
                     '''
                 }
             }
         }
 
-        stage('Check Docker') {
+        stage('Copy Project to Build EC2') {
             steps {
                 withCredentials([
                     file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
                 ]) {
                     sh '''
-                        ssh \
-                            -i "$SSH_KEY" \
+                        ssh -i "$SSH_KEY" \
                             -o IdentitiesOnly=yes \
                             -o StrictHostKeyChecking=no \
-                            -o ConnectTimeout=10 \
                             "$SSH_USER@$EC2_IP" \
-                            "docker --version && docker compose version && docker ps"
+                            "mkdir -p ~/microservices-platform"
+
+                        scp -i "$SSH_KEY" \
+                            -o IdentitiesOnly=yes \
+                            -o StrictHostKeyChecking=no \
+                            -r authentication-service user-service \
+                            product-service inventory-service \
+                            order-service notification-service kubernetes \
+                            "$SSH_USER@$EC2_IP:~/microservices-platform/"
                     '''
                 }
             }
         }
 
-        stage('Copy Project to EC2') {
-    steps {
-        withCredentials([
-            file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
-        ]) {
-            sh '''
-                ssh \
-                    -i "$SSH_KEY" \
-                    -o IdentitiesOnly=yes \
-                    -o StrictHostKeyChecking=no \
-                    "$SSH_USER@$EC2_IP" \
-                    "mkdir -p ~/microservices-platform"
+        stage('Build and Push Images to ECR') {
+            steps {
+                withCredentials([
+                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
+                ]) {
+                    sh '''
+                        ssh -i "$SSH_KEY" \
+                            -o IdentitiesOnly=yes \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_IP" \
+                            "bash -s -- '$ECR_REGISTRY' '$BUILD_NUMBER' '$AWS_DEFAULT_REGION'" <<'REMOTE'
 
-                scp \
-                    -i "$SSH_KEY" \
-                    -o IdentitiesOnly=yes \
-                    -o StrictHostKeyChecking=no \
-                    docker-compose.yml \
-                    "$SSH_USER@$EC2_IP:~/microservices-platform/"
+set -euo pipefail
 
-                scp \
-                    -i "$SSH_KEY" \
-                    -o IdentitiesOnly=yes \
-                    -o StrictHostKeyChecking=no \
-                    -r \
-                    authentication-service \
-                    inventory-service \
-                    notification-service \
-                    order-service \
-                    product-service \
-                    user-service \
-                    "$SSH_USER@$EC2_IP:~/microservices-platform/"
-            '''
+ECR_REGISTRY="$1"
+IMAGE_TAG="$2"
+AWS_REGION="$3"
+
+cd ~/microservices-platform
+
+echo "===== ECR LOGIN ====="
+
+aws ecr get-login-password --region "$AWS_REGION" | \
+    docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+SERVICES="
+authentication-service
+user-service
+product-service
+inventory-service
+order-service
+notification-service
+"
+
+for SERVICE in $SERVICES; do
+    echo "===== BUILDING $SERVICE ====="
+
+    docker build \
+        -t "$ECR_REGISTRY/$SERVICE:$IMAGE_TAG" \
+        "./$SERVICE"
+
+    docker tag \
+        "$ECR_REGISTRY/$SERVICE:$IMAGE_TAG" \
+        "$ECR_REGISTRY/$SERVICE:latest"
+
+    echo "===== PUSHING $SERVICE ====="
+
+    docker push "$ECR_REGISTRY/$SERVICE:$IMAGE_TAG"
+    docker push "$ECR_REGISTRY/$SERVICE:latest"
+done
+
+echo "===== ALL SIX IMAGES PUSHED ====="
+
+REMOTE
+                    '''
+                }
+            }
+        }
+
+        stage('Connect to Existing EKS') {
+            steps {
+                withCredentials([
+                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
+                ]) {
+                    sh '''
+                        ssh -i "$SSH_KEY" \
+                            -o IdentitiesOnly=yes \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_IP" \
+                            "aws eks update-kubeconfig \
+                            --region '$AWS_DEFAULT_REGION' \
+                            --name '$EKS_CLUSTER' && \
+                            kubectl get nodes"
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                withCredentials([
+                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
+                ]) {
+                    sh '''
+                        ssh -i "$SSH_KEY" \
+                            -o IdentitiesOnly=yes \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_IP" \
+                            "bash -s -- '$ECR_REGISTRY' '$BUILD_NUMBER'" <<'REMOTE'
+
+set -euo pipefail
+
+ECR_REGISTRY="$1"
+IMAGE_TAG="$2"
+
+cd ~/microservices-platform
+
+echo "===== APPLYING KUBERNETES MANIFESTS ====="
+
+kubectl apply -f kubernetes/k8s-deployment.yaml
+
+SERVICES="
+authentication-service
+user-service
+product-service
+inventory-service
+order-service
+notification-service
+"
+
+for SERVICE in $SERVICES; do
+    echo "===== DEPLOYING $SERVICE:$IMAGE_TAG ====="
+
+    # Recreate avoids overlapping pods using the same RWO EBS volume.
+    kubectl patch deployment "$SERVICE" \
+        --type=merge \
+        -p '{"spec":{"strategy":{"type":"Recreate"}}}'
+
+    kubectl set image \
+        "deployment/$SERVICE" \
+        "$SERVICE=$ECR_REGISTRY/$SERVICE:$IMAGE_TAG"
+
+    kubectl rollout status \
+        "deployment/$SERVICE" \
+        --timeout=300s
+done
+
+echo "===== DEPLOYMENT COMPLETE ====="
+
+REMOTE
+                    '''
+                }
+            }
+        }
+
+        stage('Verify Deployments') {
+            steps {
+                withCredentials([
+                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
+                ]) {
+                    sh '''
+                        ssh -i "$SSH_KEY" \
+                            -o IdentitiesOnly=yes \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_IP" \
+                            "kubectl get deployments,pods,services"
+                    '''
+                }
+            }
+        }
+
+        stage('Verify Health Endpoints') {
+            steps {
+                withCredentials([
+                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
+                ]) {
+                    sh '''
+                        ssh -i "$SSH_KEY" \
+                            -o IdentitiesOnly=yes \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_IP" \
+                            "bash -s" <<'REMOTE'
+
+set -euo pipefail
+
+SERVICES="
+authentication-service
+user-service
+product-service
+inventory-service
+order-service
+notification-service
+"
+
+for SERVICE in $SERVICES; do
+
+    if [ "$SERVICE" = "authentication-service" ]; then
+        HEALTH_PATH="/api/v1/health"
+    else
+        HEALTH_PATH="/health"
+    fi
+
+    echo "===== HEALTH CHECK: $SERVICE ====="
+
+    kubectl port-forward "svc/$SERVICE" 18080:8000 \
+        >/tmp/health-$SERVICE.log 2>&1 &
+
+    PF_PID=$!
+    HEALTHY=0
+
+    for ATTEMPT in $(seq 1 20); do
+        if curl -fsS "http://127.0.0.1:18080$HEALTH_PATH"; then
+            HEALTHY=1
+            break
+        fi
+        sleep 2
+    done
+
+    kill "$PF_PID" 2>/dev/null || true
+    wait "$PF_PID" 2>/dev/null || true
+
+    if [ "$HEALTHY" -ne 1 ]; then
+        echo "Health check FAILED: $SERVICE"
+        cat "/tmp/health-$SERVICE.log"
+        exit 1
+    fi
+
+    echo
+done
+
+echo "===== ALL SIX SERVICES HEALTHY ====="
+
+REMOTE
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'SUCCESS: All six microservices deployed and verified on EKS.'
+        }
+
+        failure {
+            echo 'FAILED: Check the stage logs to identify the deployment issue.'
         }
     }
 }
-        stage('Build Docker Images') {
-            steps {
-                withCredentials([
-                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
-                ]) {
-                    sh '''
-                        ssh \
-                            -i "$SSH_KEY" \
-                            -o IdentitiesOnly=yes \
-                            -o StrictHostKeyChecking=no \
-                            "$SSH_USER@$EC2_IP" \
-                            "cd ~/microservices-platform && docker compose build"
-                    '''
-                }
-            }
-        }
+EOF
 
-        stage('Run Containers') {
-            steps {
-                withCredentials([
-                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
-                ]) {
-                    sh '''
-                        ssh \
-                            -i "$SSH_KEY" \
-                            -o IdentitiesOnly=yes \
-                            -o StrictHostKeyChecking=no \
-                            "$SSH_USER@$EC2_IP" \
-                            "cd ~/microservices-platform && docker compose up -d"
-                    '''
-                }
-            }
-        }
+echo "===== JENKINSFILE VALIDATION ====="
+git diff --check
 
-        stage('Wait for Services') {
-            steps {
-                sleep time: 15, unit: 'SECONDS'
-            }
-        }
-
-        stage('Verify Endpoints') {
-            steps {
-                withCredentials([
-                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
-                ]) {
-                    sh '''
-                        ssh \
-                            -i "$SSH_KEY" \
-                            -o IdentitiesOnly=yes \
-                            -o StrictHostKeyChecking=no \
-                            "$SSH_USER@$EC2_IP" \
-                            "curl -f http://localhost:8000/api/v1/health && \
-                             curl -f http://localhost:8001/health && \
-                             curl -f http://localhost:8002/health && \
-                             curl -f http://localhost:8003/health && \
-                             curl -f http://localhost:8004/health && \
-                             curl -f http://localhost:8005/health"
-                    '''
-                }
-            }
-        }
-
-        stage('Manual Check') {
-            steps {
-                echo "Application is running on EC2: ${env.EC2_IP}"
-                echo "Keeping containers alive for 120 seconds for manual verification."
-                sleep time: 120, unit: 'SECONDS'
-            }
-        }
-
-        stage('Cleanup') {
-            steps {
-                withCredentials([
-                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
-                ]) {
-                    sh '''
-                        ssh \
-                            -i "$SSH_KEY" \
-                            -o IdentitiesOnly=yes \
-                            -o StrictHostKeyChecking=no \
-                            "$SSH_USER@$EC2_IP" \
-                            "cd ~/microservices-platform && docker compose down"
-                    '''
-                }
-            }
-        }
-    }
-}
+echo "===== JENKINSFILE CREATED ====="
+wc -l jenkins/Jenkinsfile
