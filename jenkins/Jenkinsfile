@@ -5,6 +5,7 @@ pipeline {
     options {
         timestamps()
         disableConcurrentBuilds()
+        skipDefaultCheckout(true)
     }
 
     environment {
@@ -12,25 +13,28 @@ pipeline {
         ECR_REGISTRY = '163885031975.dkr.ecr.us-east-1.amazonaws.com'
         EKS_CLUSTER = 'microservices-eks'
         SSH_USER    = 'ubuntu'
-
-        AWS_ACCESS_KEY_ID     = credentials('AWS_ACCESS_KEY')
-        AWS_SECRET_ACCESS_KEY = credentials('AWS_ACCESS_KEY_PRIVATE')
-        SSH_KEY               = credentials('SSH-KEY')
     }
 
     stages {
 
+        // 1. CHECKOUT
         stage('Checkout') {
             steps {
                 checkout scm
-                echo 'Source code checked out successfully.'
+                echo 'Repository checked out successfully.'
             }
         }
 
+        // 2. TERRAFORM
         stage('Terraform Init') {
             steps {
-                dir('terraform') {
-                    sh 'terraform init'
+                withCredentials([
+                    string(credentialsId: 'AWS_ACCESS_KEY', variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'AWS_ACCESS_KEY_PRIVATE', variable: 'AWS_SECRET_ACCESS_KEY')
+                ]) {
+                    dir('terraform') {
+                        sh 'terraform init'
+                    }
                 }
             }
         }
@@ -45,20 +49,31 @@ pipeline {
 
         stage('Terraform Plan') {
             steps {
-                dir('terraform') {
-                    sh 'terraform plan -out=tfplan'
+                withCredentials([
+                    string(credentialsId: 'AWS_ACCESS_KEY', variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'AWS_ACCESS_KEY_PRIVATE', variable: 'AWS_SECRET_ACCESS_KEY')
+                ]) {
+                    dir('terraform') {
+                        sh 'terraform plan -out=tfplan'
+                    }
                 }
             }
         }
 
         stage('Terraform Apply') {
             steps {
-                dir('terraform') {
-                    sh 'terraform apply -auto-approve tfplan'
+                withCredentials([
+                    string(credentialsId: 'AWS_ACCESS_KEY', variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'AWS_ACCESS_KEY_PRIVATE', variable: 'AWS_SECRET_ACCESS_KEY')
+                ]) {
+                    dir('terraform') {
+                        sh 'terraform apply -auto-approve tfplan'
+                    }
                 }
             }
         }
 
+        // 3. GET EC2 IP
         stage('Get EC2 Public IP') {
             steps {
                 script {
@@ -68,290 +83,415 @@ pipeline {
                     ).trim()
 
                     if (!env.EC2_PUBLIC_IP) {
-                        error('Terraform did not return an EC2 public IP.')
+                        error('Unable to retrieve EC2 public IP.')
                     }
 
-                    echo "Build EC2: ${env.EC2_PUBLIC_IP}"
+                    echo "Remote build EC2: ${env.EC2_PUBLIC_IP}"
                 }
             }
         }
 
-        stage('Test EC2 Connectivity') {
+        // 4. VERIFY EC2
+        stage('Verify Remote EC2') {
             steps {
-                sh '''
-                    ssh -i "$SSH_KEY" \
-                        -o StrictHostKeyChecking=no \
-                        -o ConnectTimeout=15 \
-                        "$SSH_USER@$EC2_PUBLIC_IP" \
-                        "echo SSH connection successful"
-                '''
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'SSH-KEY',
+                        keyFileVariable: 'SSH_KEY'
+                    )
+                ]) {
+                    sh '''
+                        set -e
+
+                        ssh -i "$SSH_KEY" \
+                            -o StrictHostKeyChecking=no \
+                            -o ConnectTimeout=20 \
+                            "$SSH_USER@$EC2_PUBLIC_IP" \
+                            "echo CONNECTED && docker --version && aws --version && kubectl version --client && aws sts get-caller-identity"
+                    '''
+                }
             }
         }
 
-        stage('Check Build Environment') {
+        // 5. VERIFY EKS
+        stage('Verify EKS Access') {
             steps {
-                sh '''
-                    ssh -i "$SSH_KEY" \
-                        -o StrictHostKeyChecking=no \
-                        "$SSH_USER@$EC2_PUBLIC_IP" \
-                        "docker --version && aws --version && kubectl version --client"
-                '''
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'SSH-KEY',
+                        keyFileVariable: 'SSH_KEY'
+                    )
+                ]) {
+                    sh '''
+                        set -e
+
+                        ssh -i "$SSH_KEY" \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_PUBLIC_IP" \
+                            "aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER && kubectl get nodes"
+                    '''
+                }
             }
         }
 
+        // 6. COPY PROJECT
         stage('Copy Project to EC2') {
             steps {
-                sh '''
-                    tar czf project.tar.gz \
-                        --exclude=.git \
-                        --exclude=.env \
-                        --exclude='*.db' \
-                        --exclude='*.sqlite*' \
-                        --exclude=.terraform \
-                        --exclude=tfplan \
-                        authentication-service \
-                        user-service \
-                        product-service \
-                        inventory-service \
-                        order-service \
-                        notification-service \
-                        kubernetes
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'SSH-KEY',
+                        keyFileVariable: 'SSH_KEY'
+                    )
+                ]) {
+                    sh '''
+                        set -e
 
-                    scp -i "$SSH_KEY" \
-                        -o StrictHostKeyChecking=no \
-                        project.tar.gz \
-                        "$SSH_USER@$EC2_PUBLIC_IP:/tmp/project.tar.gz"
+                        tar czf project.tar.gz \
+                            --exclude=.git \
+                            --exclude=.env \
+                            --exclude='*.db' \
+                            --exclude='*.sqlite*' \
+                            --exclude=.terraform \
+                            --exclude=tfplan \
+                            authentication-service \
+                            user-service \
+                            product-service \
+                            inventory-service \
+                            order-service \
+                            notification-service \
+                            kubernetes
 
-                    ssh -i "$SSH_KEY" \
-                        -o StrictHostKeyChecking=no \
-                        "$SSH_USER@$EC2_PUBLIC_IP" \
-                        "mkdir -p ~/microservices-platform && tar xzf /tmp/project.tar.gz -C ~/microservices-platform && rm /tmp/project.tar.gz"
+                        scp -i "$SSH_KEY" \
+                            -o StrictHostKeyChecking=no \
+                            project.tar.gz \
+                            "$SSH_USER@$EC2_PUBLIC_IP:/tmp/project.tar.gz"
 
-                    rm -f project.tar.gz
-                '''
+                        ssh -i "$SSH_KEY" \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_PUBLIC_IP" \
+                            "mkdir -p ~/microservices-platform && tar xzf /tmp/project.tar.gz -C ~/microservices-platform && rm /tmp/project.tar.gz"
+
+                        rm -f project.tar.gz
+                    '''
+                }
             }
         }
 
+        // 7. BUILD IMAGES
         stage('Build Docker Images') {
             steps {
-                sh '''
-                    ssh -i "$SSH_KEY" \
-                        -o StrictHostKeyChecking=no \
-                        "$SSH_USER@$EC2_PUBLIC_IP" \
-                        "bash -s" <<'REMOTE'
-                    set -e
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'SSH-KEY',
+                        keyFileVariable: 'SSH_KEY'
+                    )
+                ]) {
+                    sh '''
+                        set -e
 
-                    cd ~/microservices-platform
+                        ssh -i "$SSH_KEY" \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_PUBLIC_IP" \
+                            "BUILD_NUMBER='$BUILD_NUMBER' bash -s" <<'REMOTE'
 
-                    for SERVICE in \
-                        authentication-service \
-                        user-service \
-                        product-service \
-                        inventory-service \
-                        order-service \
-                        notification-service
-                    do
-                        echo "Building $SERVICE"
+                        set -e
+                        cd ~/microservices-platform
 
-                        docker build \
-                            -t $SERVICE:$BUILD_NUMBER \
-                            ./$SERVICE
-                    done
-                    REMOTE
-                '''
-            }
-        }
-
-        stage('ECR Authentication') {
-            steps {
-                sh '''
-                    ssh -i "$SSH_KEY" \
-                        -o StrictHostKeyChecking=no \
-                        "$SSH_USER@$EC2_PUBLIC_IP" \
-                        "aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY"
-                '''
-            }
-        }
-
-        stage('Tag and Push Images to ECR') {
-            steps {
-                sh '''
-                    ssh -i "$SSH_KEY" \
-                        -o StrictHostKeyChecking=no \
-                        "$SSH_USER@$EC2_PUBLIC_IP" \
-                        "bash -s" <<'REMOTE'
-                    set -e
-
-                    for SERVICE in \
-                        authentication-service \
-                        user-service \
-                        product-service \
-                        inventory-service \
-                        order-service \
-                        notification-service
-                    do
-                        docker tag $SERVICE:$BUILD_NUMBER \
-                            $ECR_REGISTRY/$SERVICE:$BUILD_NUMBER
-
-                        docker tag $SERVICE:$BUILD_NUMBER \
-                            $ECR_REGISTRY/$SERVICE:latest
-
-                        docker push $ECR_REGISTRY/$SERVICE:$BUILD_NUMBER
-                        docker push $ECR_REGISTRY/$SERVICE:latest
-                    done
-                    REMOTE
-                '''
-            }
-        }
-
-        stage('Configure EKS Access') {
-            steps {
-                sh '''
-                    ssh -i "$SSH_KEY" \
-                        -o StrictHostKeyChecking=no \
-                        "$SSH_USER@$EC2_PUBLIC_IP" \
-                        "aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER && kubectl get nodes"
-                '''
-            }
-        }
-
-        stage('Apply Kubernetes Storage') {
-            steps {
-                sh '''
-                    ssh -i "$SSH_KEY" \
-                        -o StrictHostKeyChecking=no \
-                        "$SSH_USER@$EC2_PUBLIC_IP" \
-                        "cd ~/microservices-platform && \
-                         kubectl apply -f kubernetes/gp3-storageclass.yaml && \
-                         kubectl apply -f kubernetes/microservices-pvc.yaml"
-                '''
-            }
-        }
-
-        stage('Deploy Kubernetes Services') {
-            steps {
-                sh '''
-                    ssh -i "$SSH_KEY" \
-                        -o StrictHostKeyChecking=no \
-                        "$SSH_USER@$EC2_PUBLIC_IP" \
-                        "cd ~/microservices-platform && kubectl apply -f kubernetes/k8s-deployment.yaml"
-                '''
-            }
-        }
-
-        stage('Update Kubernetes Images') {
-            steps {
-                sh '''
-                    ssh -i "$SSH_KEY" \
-                        -o StrictHostKeyChecking=no \
-                        "$SSH_USER@$EC2_PUBLIC_IP" \
-                        "bash -s" <<'REMOTE'
-                    set -e
-
-                    for SERVICE in \
-                        authentication-service \
-                        user-service \
-                        product-service \
-                        inventory-service \
-                        order-service \
-                        notification-service
-                    do
-                        kubectl set image deployment/$SERVICE \
-                            $SERVICE=$ECR_REGISTRY/$SERVICE:$BUILD_NUMBER
-
-                        kubectl rollout status deployment/$SERVICE \
-                            --timeout=300s
-                    done
-                    REMOTE
-                '''
-            }
-        }
-
-        stage('Verify Kubernetes Resources') {
-            steps {
-                sh '''
-                    ssh -i "$SSH_KEY" \
-                        -o StrictHostKeyChecking=no \
-                        "$SSH_USER@$EC2_PUBLIC_IP" \
-                        "kubectl get deployments && kubectl get pods && kubectl get services && kubectl get pvc"
-                '''
-            }
-        }
-
-        stage('Verify Microservice Health') {
-            steps {
-                sh '''
-                    ssh -i "$SSH_KEY" \
-                        -o StrictHostKeyChecking=no \
-                        "$SSH_USER@$EC2_PUBLIC_IP" \
-                        "bash -s" <<'REMOTE'
-                    set -e
-
-                    for SERVICE in \
-                        authentication-service \
-                        user-service \
-                        product-service \
-                        inventory-service \
-                        order-service \
-                        notification-service
-                    do
-                        echo "Checking $SERVICE"
-
-                        PORT=18080
-                        LOG=/tmp/pf-$SERVICE.log
-
-                        kubectl port-forward svc/$SERVICE $PORT:8000 > "$LOG" 2>&1 &
-                        PF_PID=$!
-
-                        SUCCESS=0
-
-                        for ATTEMPT in $(seq 1 15)
+                        for SERVICE in \
+                            authentication-service \
+                            user-service \
+                            product-service \
+                            inventory-service \
+                            order-service \
+                            notification-service
                         do
-                            if [ "$SERVICE" = "authentication-service" ]; then
-                                PATH_CHECK="/api/v1/health"
-                            else
-                                PATH_CHECK="/health"
-                            fi
+                            echo "Building $SERVICE"
 
-                            if curl -fsS "http://127.0.0.1:$PORT$PATH_CHECK"; then
-                                SUCCESS=1
-                                break
-                            fi
-
-                            sleep 2
+                            docker build \
+                                -t "$SERVICE:$BUILD_NUMBER" \
+                                "./$SERVICE"
                         done
 
-                        kill $PF_PID 2>/dev/null || true
-                        wait $PF_PID 2>/dev/null || true
-
-                        if [ "$SUCCESS" -ne 1 ]; then
-                            echo "Health check failed: $SERVICE"
-                            cat "$LOG"
-                            exit 1
-                        fi
-
-                        echo "$SERVICE health check passed."
-                    done
-                    REMOTE
-                '''
+                        REMOTE
+                    '''
+                }
             }
         }
 
-        stage('Cleanup Build Images') {
+        // 8. ECR LOGIN
+        stage('ECR Authentication') {
             steps {
-                sh '''
-                    ssh -i "$SSH_KEY" \
-                        -o StrictHostKeyChecking=no \
-                        "$SSH_USER@$EC2_PUBLIC_IP" \
-                        "docker image prune -f"
-                '''
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'SSH-KEY',
+                        keyFileVariable: 'SSH_KEY'
+                    )
+                ]) {
+                    sh '''
+                        set -e
+
+                        ssh -i "$SSH_KEY" \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_PUBLIC_IP" \
+                            "aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY"
+                    '''
+                }
+            }
+        }
+
+        // 9. PUSH IMAGES
+        stage('Push Images to ECR') {
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'SSH-KEY',
+                        keyFileVariable: 'SSH_KEY'
+                    )
+                ]) {
+                    sh '''
+                        set -e
+
+                        ssh -i "$SSH_KEY" \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_PUBLIC_IP" \
+                            "BUILD_NUMBER='$BUILD_NUMBER' ECR_REGISTRY='$ECR_REGISTRY' bash -s" <<'REMOTE'
+
+                        set -e
+
+                        for SERVICE in \
+                            authentication-service \
+                            user-service \
+                            product-service \
+                            inventory-service \
+                            order-service \
+                            notification-service
+                        do
+                            echo "Pushing $SERVICE"
+
+                            docker tag \
+                                "$SERVICE:$BUILD_NUMBER" \
+                                "$ECR_REGISTRY/$SERVICE:$BUILD_NUMBER"
+
+                            docker push "$ECR_REGISTRY/$SERVICE:$BUILD_NUMBER"
+
+                        done
+
+                        REMOTE
+                    '''
+                }
+            }
+        }
+
+        // 10. APPLY STORAGE YAML FILES
+        stage('Apply Kubernetes Storage') {
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'SSH-KEY',
+                        keyFileVariable: 'SSH_KEY'
+                    )
+                ]) {
+                    sh '''
+                        set -e
+
+                        ssh -i "$SSH_KEY" \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_PUBLIC_IP" \
+                            "cd ~/microservices-platform && \
+                             kubectl apply -f kubernetes/gp3-storageclass.yaml && \
+                             kubectl apply -f kubernetes/microservices-pvc.yaml"
+                    '''
+                }
+            }
+        }
+
+        // 11. DEPLOY APPLICATIONS
+        stage('Deploy Kubernetes Services') {
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'SSH-KEY',
+                        keyFileVariable: 'SSH_KEY'
+                    )
+                ]) {
+                    sh '''
+                        set -e
+
+                        ssh -i "$SSH_KEY" \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_PUBLIC_IP" \
+                            "cd ~/microservices-platform && kubectl apply -f kubernetes/k8s-deployment.yaml"
+                    '''
+                }
+            }
+        }
+
+        // 12. UPDATE IMAGES
+        stage('Update Kubernetes Images') {
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'SSH-KEY',
+                        keyFileVariable: 'SSH_KEY'
+                    )
+                ]) {
+                    sh '''
+                        set -e
+
+                        ssh -i "$SSH_KEY" \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_PUBLIC_IP" \
+                            "BUILD_NUMBER='$BUILD_NUMBER' ECR_REGISTRY='$ECR_REGISTRY' bash -s" <<'REMOTE'
+
+                        set -e
+
+                        for SERVICE in \
+                            authentication-service \
+                            user-service \
+                            product-service \
+                            inventory-service \
+                            order-service \
+                            notification-service
+                        do
+                            echo "Updating $SERVICE"
+
+                            kubectl set image \
+                                deployment/$SERVICE \
+                                $SERVICE=$ECR_REGISTRY/$SERVICE:$BUILD_NUMBER
+
+                            kubectl rollout status \
+                                deployment/$SERVICE \
+                                --timeout=300s
+                        done
+
+                        REMOTE
+                    '''
+                }
+            }
+        }
+
+        // 13. VERIFY RESOURCES
+        stage('Verify Kubernetes Resources') {
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'SSH-KEY',
+                        keyFileVariable: 'SSH_KEY'
+                    )
+                ]) {
+                    sh '''
+                        set -e
+
+                        ssh -i "$SSH_KEY" \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_PUBLIC_IP" \
+                            "kubectl get deployments,pods,services,pvc"
+                    '''
+                }
+            }
+        }
+
+        // 14. HEALTH CHECKS
+        stage('Microservices Health Checks') {
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'SSH-KEY',
+                        keyFileVariable: 'SSH_KEY'
+                    )
+                ]) {
+                    sh '''
+                        set -e
+
+                        ssh -i "$SSH_KEY" \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_PUBLIC_IP" \
+                            "bash -s" <<'REMOTE'
+
+                        set -e
+
+                        INDEX=0
+
+                        for SERVICE in \
+                            authentication-service \
+                            user-service \
+                            product-service \
+                            inventory-service \
+                            order-service \
+                            notification-service
+                        do
+                            INDEX=$((INDEX + 1))
+                            PORT=$((18080 + INDEX))
+                            LOG="/tmp/pf-$SERVICE.log"
+
+                            if [ "$SERVICE" = "authentication-service" ]; then
+                                HEALTH_PATH="/api/v1/health"
+                            else
+                                HEALTH_PATH="/health"
+                            fi
+
+                            echo "Checking $SERVICE"
+
+                            kubectl port-forward \
+                                "svc/$SERVICE" "$PORT:8000" \
+                                > "$LOG" 2>&1 &
+
+                            PF_PID=$!
+
+                            SUCCESS=0
+
+                            for ATTEMPT in $(seq 1 15)
+                            do
+                                if curl -fsS \
+                                    "http://127.0.0.1:$PORT$HEALTH_PATH"; then
+                                    SUCCESS=1
+                                    break
+                                fi
+
+                                sleep 2
+                            done
+
+                            kill "$PF_PID" 2>/dev/null || true
+                            wait "$PF_PID" 2>/dev/null || true
+
+                            if [ "$SUCCESS" -ne 1 ]; then
+                                echo "Health check failed: $SERVICE"
+                                cat "$LOG"
+                                exit 1
+                            fi
+
+                            echo "$SERVICE health check passed."
+                        done
+
+                        REMOTE
+                    '''
+                }
+            }
+        }
+
+        // 15. CLEANUP
+        stage('Cleanup') {
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'SSH-KEY',
+                        keyFileVariable: 'SSH_KEY'
+                    )
+                ]) {
+                    sh '''
+                        ssh -i "$SSH_KEY" \
+                            -o StrictHostKeyChecking=no \
+                            "$SSH_USER@$EC2_PUBLIC_IP" \
+                            "docker image prune -f"
+                    '''
+                }
             }
         }
     }
 
     post {
         success {
-            echo 'SUCCESS: All six microservices deployed and health checks passed.'
+            echo 'SUCCESS: All six microservices deployed successfully.'
         }
 
         failure {
@@ -359,7 +499,7 @@ pipeline {
         }
 
         always {
-            echo 'Pipeline execution completed.'
+            echo 'Microservices pipeline execution completed.'
         }
     }
 }
