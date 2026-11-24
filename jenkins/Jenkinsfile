@@ -9,23 +9,21 @@ pipeline {
     }
 
     environment {
-        AWS_REGION  = 'us-east-1'
+        AWS_REGION   = 'us-east-1'
         ECR_REGISTRY = '163885031975.dkr.ecr.us-east-1.amazonaws.com'
-        EKS_CLUSTER = 'microservices-eks'
-        SSH_USER    = 'ubuntu'
+        EKS_CLUSTER  = 'microservices-eks'
+        SSH_USER     = 'ubuntu'
     }
 
     stages {
 
-        // 1. CHECKOUT
         stage('Checkout') {
             steps {
                 checkout scm
-                echo 'Repository checked out successfully.'
+                echo 'Repository checkout successful.'
             }
         }
 
-        // 2. TERRAFORM
         stage('Terraform Init') {
             steps {
                 withCredentials([
@@ -73,7 +71,6 @@ pipeline {
             }
         }
 
-        // 3. GET EC2 IP
         stage('Get EC2 Public IP') {
             steps {
                 script {
@@ -83,22 +80,18 @@ pipeline {
                     ).trim()
 
                     if (!env.EC2_PUBLIC_IP) {
-                        error('Unable to retrieve EC2 public IP.')
+                        error('EC2 public IP not found.')
                     }
 
-                    echo "Remote build EC2: ${env.EC2_PUBLIC_IP}"
+                    echo "Build EC2: ${env.EC2_PUBLIC_IP}"
                 }
             }
         }
 
-        // 4. VERIFY EC2
         stage('Verify Remote EC2') {
             steps {
                 withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'SSH-KEY',
-                        keyFileVariable: 'SSH_KEY'
-                    )
+                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
                 ]) {
                     sh '''
                         set -e
@@ -113,14 +106,10 @@ pipeline {
             }
         }
 
-        // 5. VERIFY EKS
-        stage('Verify EKS Access') {
+        stage('Configure EKS Access') {
             steps {
                 withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'SSH-KEY',
-                        keyFileVariable: 'SSH_KEY'
-                    )
+                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
                 ]) {
                     sh '''
                         set -e
@@ -134,14 +123,10 @@ pipeline {
             }
         }
 
-        // 6. COPY PROJECT
         stage('Copy Project to EC2') {
             steps {
                 withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'SSH-KEY',
-                        keyFileVariable: 'SSH_KEY'
-                    )
+                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
                 ]) {
                     sh '''
                         set -e
@@ -177,14 +162,10 @@ pipeline {
             }
         }
 
-        // 7. BUILD IMAGES
         stage('Build Docker Images') {
             steps {
                 withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'SSH-KEY',
-                        keyFileVariable: 'SSH_KEY'
-                    )
+                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
                 ]) {
                     sh '''
                         set -e
@@ -218,14 +199,10 @@ pipeline {
             }
         }
 
-        // 8. ECR LOGIN
         stage('ECR Authentication') {
             steps {
                 withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'SSH-KEY',
-                        keyFileVariable: 'SSH_KEY'
-                    )
+                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
                 ]) {
                     sh '''
                         set -e
@@ -239,14 +216,10 @@ pipeline {
             }
         }
 
-        // 9. PUSH IMAGES
         stage('Push Images to ECR') {
             steps {
                 withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'SSH-KEY',
-                        keyFileVariable: 'SSH_KEY'
-                    )
+                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
                 ]) {
                     sh '''
                         set -e
@@ -273,7 +246,6 @@ pipeline {
                                 "$ECR_REGISTRY/$SERVICE:$BUILD_NUMBER"
 
                             docker push "$ECR_REGISTRY/$SERVICE:$BUILD_NUMBER"
-
                         done
 
                         REMOTE
@@ -282,14 +254,10 @@ pipeline {
             }
         }
 
-        // 10. APPLY STORAGE YAML FILES
         stage('Apply Kubernetes Storage') {
             steps {
                 withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'SSH-KEY',
-                        keyFileVariable: 'SSH_KEY'
-                    )
+                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
                 ]) {
                     sh '''
                         set -e
@@ -305,14 +273,10 @@ pipeline {
             }
         }
 
-        // 11. DEPLOY APPLICATIONS
         stage('Deploy Kubernetes Services') {
             steps {
                 withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'SSH-KEY',
-                        keyFileVariable: 'SSH_KEY'
-                    )
+                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
                 ]) {
                     sh '''
                         set -e
@@ -326,14 +290,10 @@ pipeline {
             }
         }
 
-        // 12. UPDATE IMAGES
         stage('Update Kubernetes Images') {
             steps {
                 withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'SSH-KEY',
-                        keyFileVariable: 'SSH_KEY'
-                    )
+                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
                 ]) {
                     sh '''
                         set -e
@@ -370,14 +330,10 @@ pipeline {
             }
         }
 
-        // 13. VERIFY RESOURCES
         stage('Verify Kubernetes Resources') {
             steps {
                 withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'SSH-KEY',
-                        keyFileVariable: 'SSH_KEY'
-                    )
+                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
                 ]) {
                     sh '''
                         set -e
@@ -391,14 +347,10 @@ pipeline {
             }
         }
 
-        // 14. HEALTH CHECKS
         stage('Microservices Health Checks') {
             steps {
                 withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'SSH-KEY',
-                        keyFileVariable: 'SSH_KEY'
-                    )
+                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
                 ]) {
                     sh '''
                         set -e
@@ -437,7 +389,6 @@ pipeline {
                                 > "$LOG" 2>&1 &
 
                             PF_PID=$!
-
                             SUCCESS=0
 
                             for ATTEMPT in $(seq 1 15)
@@ -469,14 +420,10 @@ pipeline {
             }
         }
 
-        // 15. CLEANUP
         stage('Cleanup') {
             steps {
                 withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'SSH-KEY',
-                        keyFileVariable: 'SSH_KEY'
-                    )
+                    file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
                 ]) {
                     sh '''
                         ssh -i "$SSH_KEY" \
@@ -491,15 +438,15 @@ pipeline {
 
     post {
         success {
-            echo 'SUCCESS: All six microservices deployed successfully.'
+            echo 'SUCCESS: All six microservices deployed and verified.'
         }
 
         failure {
-            echo 'FAILED: Check the Jenkins console output for the failing stage.'
+            echo 'FAILED: Inspect the failed stage in Jenkins console.'
         }
 
         always {
-            echo 'Microservices pipeline execution completed.'
+            echo 'Pipeline execution completed.'
         }
     }
 }
