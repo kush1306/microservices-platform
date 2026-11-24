@@ -162,42 +162,43 @@ pipeline {
             }
         }
 
+        
         stage('Build Docker Images') {
             steps {
                 withCredentials([
                     file(credentialsId: 'SSH-KEY', variable: 'SSH_KEY')
                 ]) {
                     sh '''
-                        set -e
+set -e
 
-                        ssh -i "$SSH_KEY" \
-                            -o StrictHostKeyChecking=no \
-                            "$SSH_USER@$EC2_PUBLIC_IP" \
-                            "BUILD_NUMBER='$BUILD_NUMBER' bash -s" <<'REMOTE'
+ssh -i "$SSH_KEY" \
+    -o StrictHostKeyChecking=no \
+    "$SSH_USER@$EC2_PUBLIC_IP" \
+    "BUILD_NUMBER='$BUILD_NUMBER' bash -s" <<'REMOTE'
 
-                        set -e
-                        cd ~/microservices-platform
+set -e
+cd ~/microservices-platform
 
-                        for SERVICE in \
-                            authentication-service \
-                            user-service \
-                            product-service \
-                            inventory-service \
-                            order-service \
-                            notification-service
-                        do
-                            echo "Building $SERVICE"
+for SERVICE in \
+    authentication-service \
+    user-service \
+    product-service \
+    inventory-service \
+    order-service \
+    notification-service
+do
+    echo "Building $SERVICE"
 
-                            docker build \
-                                -t "$SERVICE:$BUILD_NUMBER" \
-                                "./$SERVICE"
-                        done
-
-                        REMOTE
+    docker build \
+        -t "$SERVICE:$BUILD_NUMBER" \
+        "./$SERVICE"
+done
+REMOTE
                     '''
                 }
             }
         }
+
 
         stage('ECR Authentication') {
             steps {
